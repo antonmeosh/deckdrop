@@ -136,10 +136,11 @@ document.addEventListener('click',async e=>{const card=e.target.closest('[data-o
  if(ds.imppick!==undefined){const j=await api('/api/game/import',{path:ds.imppick});if(j.ok){closeModal();toast(importNote(j),'ok');openGame(j.path);}}
  if(ds.del!==undefined){const r=await ask({title:t('delete.title'),text:t('delete.game_text',{name:ds.name}),fields:[{label:t('delete.remove_shortcut'),type:'check',value:true},{label:'PIN',type:'password',numeric:true}],ok:t('delete.ok'),danger:true});if(!r)return;
   const j=await api('/api/game/delete',{path:ds.del,pin:r[1],remove_shortcut:r[0]});if(j.ok){toast(t('toast.deleted',{what:j.removed.join(', ')})+(j.notes&&j.notes.length?'. '+j.notes.join('; '):''),'ok');if(view.kind==='game')closeGame();}}
+ if(ds.move!==undefined)moveFlow(ds.move,ds.name);
  if(ds.aextract!==undefined)api('/api/archive/extract',{path:ds.aextract}).then(j=>{if(j.id){toast(t('toast.unpacking',{name:j.label}),'ok');showTab('games');}});
  if(ds.adel!==undefined){const r=await ask({title:t('arch.delete_title'),text:ds.name,ok:t('delete.ok'),danger:true});if(!r)return;const j=await api('/api/archive/delete',{path:ds.adel});if(j.ok){toast(t('toast.deleted',{what:j.removed.join(', ')}),'ok');loadArchives();}}
 });
-const CANCELLABLE=['queued','resolving','downloading'];let lastJobs=[];
+const CANCELLABLE=['queued','resolving','downloading','moving'];let lastJobs=[];
 function compatOptions(cur){const tools=(lastState&&lastState.compat_tools)||[];let opts=tools.map(x=>({value:x.name,label:x.label}));if(cur&&!opts.some(o=>o.value===cur))opts.unshift({value:cur,label:cur});opts.push({value:'',label:t('compat.none_native')});return opts;}
 function compatLabel(v){const tool=((lastState&&lastState.compat_tools)||[]).find(x=>x.name===v);return tool?tool.label:(v||t('compat.none'));}
 const chosenExe=g=>g.exes.find(x=>x.in_steam)||g.exes.find(x=>x.recommended)||g.exes[0];
@@ -167,10 +168,11 @@ function renderList(s){lastJobs=s.jobs||[];
  const gsig=JSON.stringify([s.games,showHidden]);
  if(gsig!==sigGames){sigGames=gsig;const nh=s.games.filter(g=>g.hidden).length;$('#toggleHidden').textContent=showHidden?t('games.hide_hidden'):t('games.show_hidden',{n:nh});$('#toggleHidden').hidden=!nh&&!showHidden;
   $('#games').innerHTML=s.games.filter(g=>showHidden||!g.hidden).map(listCard).join('')||`<div class="empty">${t('games.empty')}</div>`;}}
-function jobItem(j){const act=j.status==='downloading'||j.status==='uploading';const pct=j.total?Math.round(j.done*100/j.total):0;
+function jobItem(j){const act=j.status==='downloading'||j.status==='uploading'||j.status==='moving';const pct=j.total?Math.round(j.done*100/j.total):0;
   let st=L['status.'+j.status]?t('status.'+j.status):j.status;if(act)st+=' · '+fmt(j.done)+(j.total?' / '+fmt(j.total)+' · '+pct+'%':'')+(j.speed?' · '+t('unit.per_sec',{size:fmt(j.speed)}):'');
-  const cls=j.status==='error'?'err':j.status==='done'||j.status==='update_ready'?'ok':j.status==='cancelled'?'':'busy';const can=(j.kind==='download'||j.kind==='torrent')&&CANCELLABLE.includes(j.status);
-  return `<div class="item"><div class="top"><b>${esc(j.label)}</b><span class="acts">${j.update?`<span class="pill acc">${t('jobs.update_of',{name:esc(j.update)})}</span>`:''}<span class="pill k">${esc(j.disk||'')}</span>${can?`<button class="ghost sm" data-cancel="${j.id}">${t('jobs.cancel')}</button>`:''}${j.status==='update_ready'&&view.kind!=='game'?`<button class="sm" data-opengame="${esc(j.game_dir)}">${t('jobs.open_game')}</button>`:''}</span></div>`
+  const cls=j.status==='error'?'err':j.status==='done'||j.status==='update_ready'?'ok':j.status==='cancelled'?'':'busy';const can=(j.kind==='download'||j.kind==='torrent'||j.kind==='move')&&CANCELLABLE.includes(j.status);
+  const open=(j.status==='update_ready'||(j.kind==='move'&&j.status==='done'&&j.new_path))&&view.kind!=='game'?`<button class="sm" data-opengame="${esc(j.status==='update_ready'?j.game_dir:j.new_path)}">${t('jobs.open_game')}</button>`:'';
+  return `<div class="item"><div class="top"><b>${esc(j.label)}</b><span class="acts">${j.update?`<span class="pill acc">${t('jobs.update_of',{name:esc(j.update)})}</span>`:''}<span class="pill k">${esc(j.disk||'')}</span>${can?`<button class="ghost sm" data-cancel="${j.id}">${t('jobs.cancel')}</button>`:''}${open}</span></div>`
    +(act?`<div class="bar"><i style="width:${pct}%"></i></div>`:'')+`<div class="st ${cls}">${esc(st)}${j.error?' — '+esc(j.error):''}</div>`
    +(j.note&&j.status==='done'?`<div class="path">${esc(j.note)}</div>`:'')
    +(j.status==='needs_password'?`<div class="row wrap" style="margin-top:8px"><input type="password" placeholder="${t('jobs.archive_password')}" style="flex:1;min-width:140px;padding:8px 12px;font-size:.95em"><label class="small muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked>${t('jobs.remember')}</label><button class="sm" data-pwgo="${j.id}">${t('jobs.unpack')}</button></div>`:'')
@@ -185,12 +187,13 @@ function renderGame(s){const g=(s.games||[]).find(x=>x.path===view.path);
  $('#gpExes').innerHTML=g.exes.map(x=>exeRow(g,x)).join('')||`<div class="empty">${t('game.no_exes')}</div>`;
  $('#gpCoversCard').hidden=!inSteam;$('#gpSavesCard').hidden=!inSteam;$('#gpLayoutsCard').hidden=!inSteam;$('#gpFilesCard').hidden=$('#gpUpdCard').hidden=!g.exes.length;
  $('#gpActs').innerHTML=(g.hidden?`<button class="ghost sm" data-hide="${esc(g.path)}" data-hidden="0">${t('game.unhide')}</button>`:`<button class="ghost sm" data-hide="${esc(g.path)}" data-hidden="1">${t('game.hide')}</button>`)+(g.imported?`<button class="ghost sm" data-unimport="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('unimport.button')}</button>`:'')
+  +`<button class="ghost sm" data-move="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('move.button')}</button>`
   +`<button class="danger sm" data-del="${esc(g.path)}" data-name="${esc(g.title||g.name)}">${t('game.delete')}</button>`
   +(g.imported?`<span class="hint" style="flex-basis:100%">${t('game.own_hint')}</span>`:'');
  const info=[t('info.folder_html',{name:esc(g.name)}),t('info.disk',{disk:esc(g.disk)})];
  if(gameInfo&&gameInfo.path===g.path)info.push(t('info.size',{size:fmt(gameInfo.size),n:gameInfo.files}));
  if(ch&&ch.in_steam){info.push(t('info.steam_name',{name:esc(ch.name)}));if(ch.appid)info.push(`Steam AppID: <code>${ch.appid}</code>`);if(!ch.linux)info.push(`Proton: ${esc(compatLabel(ch.compat))}${ch.compat_from==='steam'?' · '+t('info.from_steam_settings'):''}`);
-  if(ch.art_source)info.push(t('info.art',{source:ch.art_source==='vndb'?'VNDB · '+esc(ch.vndb_title||''):ch.art_source==='custom'?t('art.src.custom'):ch.art_source==='steam'?t('art.src.steam'):t('art.src.icon')}));if(ch.art_note)info.push(esc(ch.art_note));if(ch.art_error)info.push(`<span class="err">${esc(ch.art_error)}</span>`);if(ch.pending)info.push(`<span class="busy">${t('info.pending')}</span>`);
+  if(ch.art_source)info.push(t('info.art',{source:ch.art_source==='vndb'?'VNDB · '+esc(ch.vndb_title||''):ch.art_source==='custom'?t('art.src.custom'):ch.art_source==='steam'?t('art.src.steam'):ch.art_source==='steamcdn'?t('art.src.steamcdn'):ch.art_source==='griddb'?t('art.src.griddb'):t('art.src.icon')}));if(ch.art_note)info.push(esc(ch.art_note));if(ch.art_error)info.push(`<span class="err">${esc(ch.art_error)}</span>`);if(ch.pending)info.push(`<span class="busy">${t('info.pending')}</span>`);
   if(ch.layout)info.push(t('info.layout',{name:esc(ch.layout)}));if(ch.layout_error)info.push(`<span class="err">${t('info.layout_error',{error:esc(ch.layout_error)})}</span>`);}
  $('#gpInfo').innerHTML=info.join('<br>');}
 function render(s){if(!s)return;
@@ -333,10 +336,17 @@ function patchPreview(g,r){return new Promise(done=>{
   if(a.ok)toast(t('patch.done',{where:a.target_rel==='.'?t('files.game_root'):a.target_rel,n:a.written})+(a.replaced?', '+t('patch.done_replaced',{n:a.replaced}):'')+(a.backups?', '+t('patch.done_backups',{n:a.backups}):'')+(a.skipped_count?', '+t('patch.done_skipped',{n:a.skipped_count}):''),'ok');
   done(!!a.ok);};});}
 async function loadCovers(g,x){const q=`game=${encodeURIComponent(g.path)}&exe=${encodeURIComponent(x.exe)}`;$('#gpCvHint').textContent=t('common.looking');
+ $('#gpAuto').onclick=async()=>{const b=$('#gpAuto');b.disabled=true;b.textContent=t('common.looking');
+  const j=await api('/api/art',{game:g.path,exe:x.exe,source:'auto'});
+  if(j.ok){toast(t('covers.making'),'ok');setTimeout(()=>{b.disabled=false;b.textContent=t('covers.auto');loadCovers(g,x);},8000);}
+  else{b.disabled=false;b.textContent=t('covers.auto');}};
  $('#gpVndb').onclick=()=>vndbPicker(g.path,x.exe,x.clean_name||x.name,()=>loadCovers(g,x));
+ $('#gpSteam').onclick=()=>webPicker('steam',g.path,x.exe,x.clean_name||x.name,()=>loadCovers(g,x));
+ $('#gpGrid').hidden=!((lastState&&lastState.settings||{}).griddb_key_set);
+ $('#gpGrid').onclick=()=>webPicker('griddb',g.path,x.exe,x.clean_name||x.name,()=>loadCovers(g,x));
  $('#gpIcon').onclick=async()=>{const j=await api('/api/art',{game:g.path,exe:x.exe,source:'icon'});if(j.ok){toast(t('covers.drawing_from_icon'),'ok');setTimeout(()=>loadCovers(g,x),5000);}};
  try{const j=await(await fetch('/api/art/current?'+q)).json();if(j.error){$('#gpCvHint').innerHTML=`<span class="err">${esc(j.error)}</span>`;$('#gpCovers').innerHTML='';return;}
-  $('#gpCvHint').textContent=(j.source==='vndb'?t('covers.src_vndb',{title:j.vndb_title||''}):j.source==='custom'?t('covers.src_custom'):j.source==='icon'?t('covers.src_icon'):j.source==='steam'?t('covers.src_steam'):t('covers.src_none'))+(j.live?'':' · '+t('covers.after_restart'))+(j.note?' · '+j.note:'')+(j.error?' · '+j.error:'')+'. '+t('covers.replace_hint');
+  $('#gpCvHint').textContent=(j.source==='vndb'?t('covers.src_vndb',{title:j.vndb_title||''}):j.source==='custom'?t('covers.src_custom'):j.source==='icon'?t('covers.src_icon'):j.source==='steam'?t('covers.src_steam'):j.source==='steamcdn'?t('covers.src_steamcdn',{title:j.art_title||''}):j.source==='griddb'?t('covers.src_griddb',{title:j.art_title||''}):t('covers.src_none'))+(j.live?'':' · '+t('covers.after_restart'))+(j.note?' · '+j.note:'')+(j.error?' · '+j.error:'')+'. '+t('covers.replace_hint');
   $('#gpCovers').innerHTML=Object.keys(LAB).map(sl=>{const it=j.slots[sl];const [ttl,sz,ar]=LAB[sl];return `<div class="cov"><div class="im" style="--ar:${ar}">${it?`<img src="${esc(it.url)}" alt="">`:`<span class="muted small">${t('common.none')}</span>`}</div><b>${ttl}</b><small>${sz}${it?' · '+fmt(it.size):''}</small><div class="acts" style="justify-content:center"><button class="ghost sm" data-cup="${sl}">${t('covers.replace')}</button><button class="ghost sm" data-cvn="${sl}">VNDB…</button>${sl==='icon'?`<button class="ghost sm" data-cexe="${sl}">${t('covers.from_exe')}</button>`:''}</div></div>`;}).join('');
   $('#gpCovers').querySelectorAll('[data-cvn]').forEach(bt=>bt.onclick=()=>vndbPicker(g.path,x.exe,x.clean_name||x.name,()=>loadCovers(g,x),bt.dataset.cvn));
   $('#gpCovers').querySelectorAll('[data-cexe]').forEach(bt=>bt.onclick=async()=>{bt.disabled=true;bt.textContent=t('covers.taking');
@@ -396,6 +406,22 @@ $('#importGame').onclick=async()=>{
   if(c.length)$('#icand').innerHTML=`<div class="sect">${t('import.in_steam_only')}</div>`
    +c.map(x=>`<div class="vn" style="cursor:default"><div style="flex:1;min-width:0"><b>${esc(x.name||x.dir.split('/').pop())}</b><small>${esc(x.dir)}${x.exists?'':' · '+t('import.file_missing')}</small></div><button class="ghost sm" data-imppick="${esc(x.dir)}" ${x.exists?'':'disabled'}>${t('import.add_one')}</button></div>`).join('');
  }catch(e){}};
+// ---- move a game to another disk: the folder is copied, the Steam shortcut is pointed at it
+async function moveFlow(path,name){
+ const g=((lastState&&lastState.games)||[]).find(x=>x.path===path)||{};const cur=g.disk||'';
+ const disks=((lastState&&lastState.disks)||[]).filter(d=>d.label!==cur);
+ if(!disks.length){toast(t('move.no_target'),'err');return;}
+ let info={};try{info=await(await fetch('/api/game/info?path='+encodeURIComponent(path))).json();}catch(e){}
+ openModal(`<h3>${t('move.title')}</h3><p>${t('move.text',{name:esc(name),size:fmt(info.size)})}</p>`
+  +`<label>${t('move.to')}</label><select id="mvDisk">${disks.map(d=>`<option value="${esc(d.id)}">${esc(d.label)} · ${t('disk.free',{size:fmt(d.free)})}</option>`).join('')}</select>`
+  +`<div class="hint" style="margin-top:8px">${t('move.hint')}</div>`
+  +`<div class="btns"><button class="ghost" id="mvNo">${t('btn.cancel')}</button><button id="mvGo">${t('move.go')}</button></div>`);
+ $('#mvNo').onclick=closeModal;
+ $('#mvGo').onclick=async()=>{const b=$('#mvGo');b.disabled=true;b.textContent=t('move.starting');
+  const j=await api('/api/game/move',{game:path,disk:$('#mvDisk').value});
+  if(j.id){closeModal();toast(t('move.started',{name}),'ok');showTab('games');if(view.kind==='game')closeGame();}
+  else{b.disabled=false;b.textContent=t('move.go');}}
+}
 // ---- add to Steam: pick a name (when there are several candidates) and Proton for this game
 async function addFlow(game,exe){const g=((lastState&&lastState.games)||[]).find(x=>x.path===game);const x=g&&g.exes.find(e=>e.exe===exe);const own=(x&&(x.clean_name||x.name))||'';
  const names=[own,...((g&&g.names)||[])].filter((n,i,a)=>n&&a.findIndex(m=>m.toLowerCase()===n.toLowerCase())===i);let name=own,tool=null;
@@ -423,6 +449,20 @@ async function vndbPicker(game,exe,name,after,slot){
   $('#vres').innerHTML=(r.results||[]).map(v=>`<div class="vn" data-vn="${esc(v.id)}" data-title="${esc(v.title||'')}">${v.image?`<img src="${esc(v.image)}" loading="lazy" alt="">`:`<div class="ph">${t('common.none')}</div>`}<div><b>${esc(v.title)}</b><small>${esc(v.alttitle||'')}${v.released?' · '+esc(v.released):''} · ${esc(v.id)}</small></div></div>`).join('')||`<div class="empty">${t('vndb.nothing')}</div>`;
   $('#vres').querySelectorAll('.vn').forEach(el=>el.onclick=()=>slot?showImages(el.dataset.vn,el.dataset.title):applyAll(el.dataset.vn));}catch(e){$('#vres').innerHTML=`<div class="empty err">${t('err.network')}</div>`;}};
  $('#vgo').onclick=search;$('#vq').addEventListener('keydown',e=>{if(e.key==='Enter')search();});search();}
+// ---- Steam / SteamGridDB picker: search by name, then take the whole cover set
+async function webPicker(source,game,exe,name,after){
+ const label=source==='griddb'?t('web.griddb'):t('web.steam');
+ openModal(`<h3>${t('web.title',{source:label})}</h3><p>${t('web.text')}</p><div class="row"><input id="wq" type="text" value="${esc(name)}" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="wgo" class="sm">${t('vndb.search')}</button></div><div id="wres"></div><div class="btns"><button class="ghost" id="wcancel">${t('btn.close')}</button></div>`);
+ $('#wcancel').onclick=closeModal;
+ const apply=async(r)=>{closeModal();toast(t('web.applying'));const j=await api('/api/art/web',{game,exe,source,id:r.id,title:r.title});if(j.ok&&after)setTimeout(after,7000);};
+ const search=async()=>{$('#wres').innerHTML=`<div class="empty">${t('vndb.searching')}</div>`;
+  try{const r=await(await fetch('/api/art/search?source='+encodeURIComponent(source)+'&q='+encodeURIComponent($('#wq').value))).json();
+   if(r.error){$('#wres').innerHTML=`<div class="empty err">${esc(r.error)}</div>`;return;}
+   $('#wres').innerHTML=(r.results||[]).map(v=>`<div class="vn" data-id="${esc(v.id)}" data-title="${esc(v.title)}">${v.image?`<img src="${esc(v.image)}" loading="lazy" alt="">`:`<div class="ph">${t('common.none')}</div>`}<div><b>${esc(v.title)}</b><small>${esc(label)} · ${esc(v.id)}</small></div></div>`).join('')||`<div class="empty">${t('vndb.nothing')}</div>`;
+   $('#wres').querySelectorAll('.vn').forEach(el=>el.onclick=()=>apply({id:el.dataset.id,title:el.dataset.title}));
+  }catch(e){$('#wres').innerHTML=`<div class="empty err">${t('err.network')}</div>`;}};
+ $('#wgo').onclick=search;$('#wq').addEventListener('keydown',e=>{if(e.key==='Enter')search();});search();
+}
 // ---- archives tab
 async function loadArchives(){try{const j=await(await fetch('/api/archives')).json();const a=j.archives||[];$('#archTotal').textContent=a.length?`${a.length} · ${fmt(a.reduce((s,x)=>s+x.size,0))}`:t('common.empty');
  $('#archives').innerHTML=a.map(x=>`<div class="arch"><div class="nm"><b>${esc(x.name)}</b><div class="path">${esc(x.disk)} · ${fmt(x.size)} · ${when(x.time)}</div></div><span class="acts">${x.extracted?`<span class="pill">${t('arch.unpacked')}</span>`:x.archive?`<button class="ghost sm" data-aextract="${esc(x.path)}">${t('jobs.unpack')}</button>`:x.part?`<span class="pill k">${t('arch.part')}</span>`:`<span class="pill k">${t('arch.file')}</span>`}<button class="danger sm" data-adel="${esc(x.path)}" data-name="${esc(x.name)}">${t('arch.delete')}</button></span></div>`).join('')||`<div class="empty">${t('arch.empty')}</div>`;}catch(e){}}
@@ -431,11 +471,62 @@ $('#inboxClear').onclick=async()=>{let st={};try{st=await(await fetch('/api/inbo
  if(!st.removed){toast(st.skipped?t('inbox.only_active'):t('inbox.already_empty'),'ok');return;}
  const r=await ask({title:t('inbox.clear_title'),text:t('inbox.clear_text',{n:st.removed,size:fmt(st.freed)})+(st.skipped?' '+t('inbox.clear_keeps',{n:st.skipped}):''),ok:t('inbox.clear_ok'),danger:true});if(!r)return;
  const j=await api('/api/inbox/clear',{});if(j.ok){toast(t('inbox.cleared',{n:j.removed,size:fmt(j.freed)}),'ok');loadArchives();}};
+// ---- storage: where the space went, measured on the Deck in the background
+let storageTimer=null;
+const STORAGE_PARTS=[
+ ['games',t('storage.part.games'),'var(--accent)'],
+ ['prefixes',t('storage.part.prefixes'),'var(--accent2)'],
+ ['inbox',t('storage.part.inbox'),'var(--warn)'],
+ ['backups',t('storage.part.backups'),'#ff9f6b'],
+ ['other',t('storage.part.other'),'#3a4b60']];
+function storageDisk(d){
+ const parts=d.parts||{};const used=d.used!=null?d.used:STORAGE_PARTS.reduce((s,p)=>s+(parts[p[0]]||0),0);
+ const bar=STORAGE_PARTS.map(p=>{const n=parts[p[0]]||0;return n&&used?`<i style="width:${Math.min(100,n/used*100).toFixed(1)}%;background:${p[2]}" title="${esc(p[1])}: ${fmt(n)}"></i>`:'';}).join('');
+ const legend=STORAGE_PARTS.map(p=>`<span><i class="dot" style="background:${p[2]}"></i>${esc(p[1])} · ${fmt(parts[p[0]]||0)}</span>`).join('');
+ const games=(d.games||[]).map(g=>`<div class="arch"><div class="nm"><b>${esc(g.title)}</b><div class="path">${esc(g.disk)} · ${fmt(g.size)}${g.prefix?' · '+t('storage.prefix',{size:fmt(g.prefix)}):''}${g.backup?' · '+t('storage.backup',{size:fmt(g.backup)}):''}</div></div>`
+  +(lastState&&(lastState.games||[]).some(x=>x.path===g.path)?`<span class="acts"><button class="ghost sm" data-stopen="${esc(g.path)}">${t('jobs.open_game')}</button></span>`:'')+'</div>').join('');
+ const prefixes=(d.prefixes||[]).map(p=>`<div class="arch"><div class="nm"><b>${esc(p.title)}</b><div class="path">AppID ${p.appid} · ${fmt(p.size)}</div></div></div>`).join('');
+ const dups=(d.duplicates||[]).map(x=>`<div class="hint" style="margin:4px 0">${esc(x.title)} · ${t('storage.duplicate',{size:fmt(x.size),n:x.disks.length})}</div>`).join('');
+ const free=d.total!=null?t('disk.free_of',{free:fmt(d.free),total:fmt(d.total)})+(d.used!=null?' · '+t('storage.used',{size:fmt(d.used)}):''):t('storage.offline');
+ return `<div class="sect">${esc(d.label)}</div><div class="hint">${esc(free)}</div>`
+  +`<div class="sbar">${bar}</div><div class="legend">${legend}</div>`
+  +`<div class="sect">${t('storage.games')}</div>`+(games||`<div class="hint">${t('storage.no_games')}</div>`)
+  +(prefixes?`<div class="sect">${t('storage.prefixes')}</div>${prefixes}<div class="hint">${t('storage.prefix_note')}</div>`:'')
+  +(dups?`<div class="sect">${t('storage.duplicates')}</div>${dups}`:'');
+}
+function storageRender(j){
+ const box=$('#stBody');if(!box)return;
+ const at=j.at?t('storage.at',{when:when(j.at)}):'';
+ if(j.error&&!(j.disks||[]).length){box.innerHTML=`<div class="hint err">${esc(t('storage.error',{error:j.error}))}</div>`;return;}
+ const disks=j.disks||[];if(!disks.length){box.innerHTML=`<div class="empty">${t('storage.loading')}</div>`;return;}
+ box.innerHTML=`<div class="hint">${j.building?t('storage.building'):''}${j.building&&at?' · ':''}${at}</div>`+disks.map(storageDisk).join('');
+ box.querySelectorAll('[data-stopen]').forEach(b=>b.onclick=()=>{const p=b.dataset.stopen;closeModal();openGame(p);});
+}
+async function storageLoad(refresh){
+ if(!$('#stBody'))return;
+ if(storageTimer){clearTimeout(storageTimer);storageTimer=null;}
+ let j={};try{j=await(await fetch('/api/storage'+(refresh?'?refresh=1':''))).json();}catch(e){j={error:t('err.network'),disks:[]};}
+ if(!$('#stBody'))return;
+ storageRender(j);
+ if(j.building)storageTimer=setTimeout(()=>storageLoad(false),1200);
+}
+function storageOpen(){
+ if(storageTimer){clearTimeout(storageTimer);storageTimer=null;}
+ openModal(`<h3>${t('storage.title')}</h3><p>${t('storage.hint')}</p><div id="stBody"><div class="empty">${t('storage.loading')}</div></div>`
+  +`<div class="btns"><button class="ghost sm" id="stRefresh">${t('storage.refresh')}</button><button class="ghost" id="stClose">${t('btn.close')}</button></div>`);
+ $('#stClose').onclick=closeModal;
+ $('#stRefresh').onclick=()=>storageLoad(true);
+ storageLoad(false);
+}
+$('#stOpen').onclick=storageOpen;
+$('#stChip').onclick=storageOpen;
 // ---- settings tab (each control saves on change)
 function fillSettings(){const s=lastState;if(!s)return;const st=s.settings||{},c=s.cdp||{};
  $('#sCdpTxt').textContent=c.available?t('cdp.long.live'):c.marker&&c.enabled?t('cdp.long.after_reboot'):c.enabled?t('cdp.long.no_steam'):t('cdp.long.off');
  $('#sCompat').innerHTML=compatOptions(st.default_compat).map(o=>`<option value="${esc(o.value)}" ${o.value===(st.default_compat||'')?'selected':''}>${esc(o.label)}</option>`).join('');
  $('#sLinux').checked=!!st.prefer_linux;$('#sCef').checked=!!st.cef_enabled;$('#sVndb').checked=!!st.vndb_auto;$('#sSafe').checked=!st.vndb_nsfw;
+ $('#sSteam').checked=st.art_steam!==false;$('#sGrid').checked=!!st.art_griddb;
+ $('#sGridKey').placeholder=st.griddb_key_set?t('set.covers.griddb_saved'):t('set.covers.griddb_key_hint');
  if(document.activeElement!==$('#sPw'))$('#sPw').value=(st.archive_passwords||[]).join(', ');if(document.activeElement!==$('#sUpd'))$('#sUpd').value=st.update_url||'';
  $('#sProxyView').textContent=st.proxy_masked||t('proxy.not_set');$('#sProxyDl').checked=!!st.proxy_downloads;$('#sMega').checked=!!st.mega_verify;
  if(document.activeElement!==$('#sTorUrl'))$('#sTorUrl').value=st.torrent_url||'';
@@ -461,6 +552,9 @@ $('#sTorTest').onclick=async()=>{const b=$('#sTorTest');b.disabled=true;b.textCo
  }catch(e){$('#sTorTestRes').textContent=t('torrent.check_bad',{error:e});}
  b.disabled=false;b.textContent=t('torrent.test');};
 $('#sPinGo').onclick=async()=>{const j=await api('/api/settings/pin',{old:$('#sPinOld').value,new:$('#sPinNew').value});if(j.ok){toast(t('pin.changed'),'ok');$('#sPinOld').value=$('#sPinNew').value='';}};
+$('#sGridTest').onclick=async()=>{const b=$('#sGridTest');b.disabled=true;b.textContent=t('common.checking');$('#sGridRes').textContent='';
+ try{const j=await api('/api/griddb/test',{});if(j.ok)$('#sGridRes').textContent=t('griddb.check_ok',{n:j.found});}catch(e){$('#sGridRes').textContent=t('status.error');}
+ b.disabled=false;b.textContent=t('set.covers.griddb_test');};
 // ---- performance: the self-check and the measurements run on the Deck, the page only shows them
 let perfReport='';
 const PERF_ICON={ok:'✅',warn:'⚠️',fail:'❌',info:'ℹ️'};

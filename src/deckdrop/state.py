@@ -25,6 +25,9 @@ STATE = {
     "prefer_linux": True,
     "vndb_auto": True,
     "vndb_nsfw": True,             # False = skip 18+ images from VNDB
+    "art_steam": True,            # fill missing slots from the Steam store CDN (no key needed)
+    "art_griddb": False,          # fill missing slots from SteamGridDB (needs griddb_key)
+    "griddb_key": "",             # never sent to the page
     "archive_passwords": [],
     "default_disk": "internal",
     "proxy": "",                  # DeckDrop-only proxy: socks5://host:port or http://host:port
@@ -37,12 +40,13 @@ STATE = {
     "torrent_pass": "",           # never sent to the page
     "auto_add_steam": True,       # add a game that arrived as a folder or a torrent to Steam
 }
-SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "archive_passwords",
+SETTING_KEYS = ("default_compat", "prefer_linux", "vndb_auto", "vndb_nsfw", "art_steam", "art_griddb",
+                "griddb_key", "archive_passwords",
                 "default_disk", "cef_enabled", "update_url", "proxy", "proxy_downloads",
                 "mega_verify", "default_layout", "torrent_url", "torrent_user", "torrent_pass",
                 "auto_add_steam")
 PROTECTED_KEYS = ("proxy",)   # may carry credentials: PIN required to read or change
-SECRET_KEYS = ("proxy", "torrent_pass")   # never sent to the page
+SECRET_KEYS = ("proxy", "torrent_pass", "griddb_key")   # never sent to the page
 
 
 def load_state():

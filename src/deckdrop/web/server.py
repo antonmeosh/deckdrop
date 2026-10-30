@@ -20,6 +20,7 @@ from ..art.covers import (
     art_current, art_file_for, art_from_exe, art_from_url, art_worker, custom_art, proxy_test,
     vndb_image_list, vndb_search,
 )
+from ..art import webcovers
 from ..config import CACHE_DIR, CHUNK, FFMPEG, GAMES_DIR, MIME, PORT, UPDATE_URL_DEFAULT, log
 from ..detect import game_exe_path
 from ..diagnostics import benchmark, report_md, self_check
@@ -38,6 +39,8 @@ from ..media import (
     scan_media,
 )
 from ..mega import mega_probe
+from ..movegame import cancel as move_cancel
+from ..movegame import start as start_move
 from ..net import mask_proxy
 from ..patches import (
     _patch_drop, game_dir_list, game_file_upload, patch_apply, patch_unlock, patch_upload,
@@ -60,6 +63,7 @@ from ..torrent import cancel as torrent_cancel
 from ..torrent import probe as torrent_probe
 from ..torrent import start as start_torrent
 from ..update import self_update
+from ..usage import report as storage_report
 from ..uploads import abort as upload_abort
 from ..uploads import begin as upload_begin
 from ..uploads import finish_tree as upload_finish
@@ -97,6 +101,7 @@ def public_settings():
     out["proxy_masked"] = mask_proxy(STATE.get("proxy"))
     out["proxy_set"] = bool((STATE.get("proxy") or "").strip())
     out["torrent_pass_set"] = bool(STATE.get("torrent_pass"))
+    out["griddb_key_set"] = bool((STATE.get("griddb_key") or "").strip())
     return out
 
 
@@ -248,6 +253,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not f:
                     raise FileNotFoundError(tr("covers.none_in_slot"))
                 self.send_file(f)
+            elif path == "/api/storage":
+                self.send_json(storage_report(refresh="refresh" in q))
             elif path == "/api/perf/report":
                 name, text = report_md(self.q1(q, "kind"))
                 self._send(200, text.encode("utf-8"), "text/markdown; charset=utf-8",
@@ -262,6 +269,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(vndb_image_list(self.q1(q, "vn")))
             elif path == "/api/vndb/search":
                 self.send_json({"results": vndb_search(self.q1(q, "q"))})
+            elif path == "/api/art/search":
+                self.send_json({"results": webcovers.search(self.q1(q, "source"), self.q1(q, "q"))})
             elif path == "/api/saves/info":
                 self.send_json(saves_info(self.q1(q, "game"), self.q1(q, "exe")))
             elif path == "/api/saves/backup":
@@ -395,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif path == "/api/cancel":
                 jid = int(body.get("id", 0) or 0)
-                self.send_json({"ok": cancel_job(jid) or torrent_cancel(jid)})
+                self.send_json({"ok": cancel_job(jid) or torrent_cancel(jid) or move_cancel(jid)})
             elif path == "/api/cancel_all":
                 self.send_json({"ok": True, "stopped": cancel_all()})
             elif path == "/api/inbox/clear":
@@ -415,9 +424,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/art":
                 p = game_exe_path(s("game"), s("exe"))
                 source = s("source", "auto")
-                if source not in ("auto", "icon", "vndb"):
+                if source not in ("auto", "icon", "vndb", "steam", "griddb"):
                     raise ValueError("source")
-                threading.Thread(target=carry(art_worker), args=(str(p), True, False, source, s("vn") or None), daemon=True).start()
+                threading.Thread(target=carry(art_worker), args=(str(p), True, False, source, s("vn") or None,
+                                                                s("id") or None, s("title") or None),
+                                 daemon=True).start()
+                self.send_json({"ok": True, "note": tr("covers.making")})
+            elif path == "/api/art/web":
+                p = game_exe_path(s("game"), s("exe"))
+                source = s("source")
+                if source not in ("steam", "griddb"):
+                    raise ValueError(tr("web.bad_source"))
+                threading.Thread(target=carry(art_worker), args=(str(p), True, False, source, None,
+                                                                s("id") or None, s("title") or None),
+                                 daemon=True).start()
                 self.send_json({"ok": True, "note": tr("covers.making")})
             elif path == "/api/art/from_exe":
                 self.send_json({"ok": True, **art_from_exe(s("game"), s("exe"), s("slot"))})
@@ -438,6 +458,8 @@ class Handler(BaseHTTPRequestHandler):
                 check_pin(body.get("pin"))
                 removed, notes = delete_game(s("path"), bool(body.get("remove_shortcut")))
                 self.send_json({"ok": True, "removed": removed, "notes": notes})
+            elif path == "/api/game/move":
+                self.send_json(start_move(s("game"), s("disk")).to_dict())
             elif path == "/api/layouts/save":
                 self.send_json({"ok": True, **save_from_game(s("game"), s("exe"), s("src"), s("name"))})
             elif path == "/api/layouts/apply":
@@ -485,13 +507,14 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     v = body[k]
                     if k in ("prefer_linux", "vndb_auto", "vndb_nsfw", "cef_enabled",
-                             "proxy_downloads", "mega_verify", "auto_add_steam"):
+                             "proxy_downloads", "mega_verify", "auto_add_steam",
+                             "art_steam", "art_griddb"):
                         v = v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "on", "yes")
                     elif k == "archive_passwords":
                         v = [str(x).strip() for x in (v if isinstance(v, list) else str(v).splitlines()) if str(x).strip()]
                     else:
                         v = str(v or "").strip()
-                    if k == "torrent_pass" and not v:
+                    if k in ("torrent_pass", "griddb_key") and not v:
                         continue          # an empty field means "keep the saved password"
                     changes[k] = v
                 if changes:
@@ -510,6 +533,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError(tr("pin.format"))
                 set_state(admin_pin=new)
                 self.send_json({"ok": True})
+            elif path == "/api/griddb/test":
+                self.send_json({"ok": True, **webcovers.griddb_test()})
             elif path == "/api/perf/check":
                 self.send_json({"ok": True, **self_check()})
             elif path == "/api/perf/bench":
